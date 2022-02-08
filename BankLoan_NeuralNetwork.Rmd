@@ -1,0 +1,474 @@
+---
+title: "<center>Implementing Neural Network Algorithms</center>"
+subtitle: "<center>Using Bank Loan Dataset</center>"
+date: "<center>`r format(Sys.time(), '%B %Y')`</center>"
+author: "<center>Sophia Tang Hart</center>"
+output:  # html_notebook
+  html_document:
+      theme: journal
+      toc: yes
+      toc_depth: 4
+      #toc_float: true
+  word_document:
+      toc: yes
+      toc_depth: 4
+      #toc_float: true
+  pdf_document:
+      toc: yes
+      theme: journal
+      toc_depth: 4
+      #toc_float: true
+---
+
+
+# OBJECTIVE AND DATA DESCRIPTION
+**Background: **
+
+Banks loan out money to customers to finance a car, a house, pay for education, consolidate loans, etc. Borrowers agree to pay back the money with an interest on a monthly basis. Sometimes, due to unexpected circumstances, some borrowers are not able to pay back the money. 
+
+
+**Research Objectives: **
+
+The banks would want to see what is the pattern in the customers to predict if a customer can pay back the loan, so the bank knows who to lend out the money. I would like to predict if any customer goes to a bank, should the bank loan out the money to the customer base on model learned from this dataset. 
+
+
+**Research Questions: ** 
+
+1. What factors contribute/correlated most to bank loan status?
+
+2. Can we predict if a borrower will be able to pay the debt in full?
+
+3. What Machine Learning algorithms perform best in the prediction? (First Guess)
+
+4. Optimize all (or the best) algorithms. With the fine tuned hyperparameters, what is the best prediction performance? Which algorithm?
+
+
+**Dataset**
+
+The dataset is taken from Kaggle (https://www.kaggle.com/zaurbegiev/my-dataset). There are over 100,000 rows and 19 columns (features) in this dataset. The predicted feature variable is Loan_Status, which is a categorical variable with value either "Fully Paid" or "Charged off". Fully Paid means the borrower can pay back the debt, while charged off means the borrower is unlikely pay the bank after a substantial delinquent for a period of time. The remainder of the debt is sometimes collected by a third-party agency.
+ 
+
+LoanID,
+
+CustomerID,
+
+Loan_Status,
+
+Current_Loan_Amount,
+
+Term,
+
+Credit_Score,
+
+Annual_Income,
+
+Years_in_current_job,
+
+Home_Ownership,
+
+Purpose,
+
+Monthly_Debt,
+
+Years_of_Credit_History,
+
+Months_since_last_delinquent,
+
+Number_of_Open_Accounts,
+
+Number_of_Credit_Problems,
+
+Current_Credit_Balance,
+
+Maximum_Open_Credit,
+
+Bankruptcies,
+
+Tax_Liens
+
+
+# STEP 1: LOADING LIBRARIES AND DATA
+```{r message=FALSE, warning=FALSE}
+library(caret)
+library(dplyr)
+library(tidyverse)
+library(mlbench)
+#library(gmodels)
+# for multiple plots in one figure (ggarrange)
+library(ggpubr)
+library(ggplot2)
+library(lattice)
+
+library(nnet)
+library(NeuralNetTools)
+library(clValid)
+library(cluster)
+library(MASS) # lda
+
+```
+
+## Examing data
+```{r message=FALSE, warning=FALSE}
+
+# Clear memory
+rm(list=ls())
+
+# read in data
+BankLoan_dataset <- read.csv("LoanStatus.csv")
+
+# remove unrelevant fields
+BankLoan_dataset <- subset(BankLoan_dataset, select=-c(LoanID, CustomerID))
+
+# data structure
+knitr::kable(str(BankLoan_dataset))
+
+# data summary
+knitr::kable(head(BankLoan_dataset))
+knitr::kable(summary(BankLoan_dataset))
+```
+
+# STEP 2: DATA PREPROCESSING
+
+## a) Convert to numeric values
+```{r message=FALSE, warning=FALSE}
+
+BankLoan_dataset$Years_in_current_job = extract_numeric(BankLoan_dataset$Years_in_current_job)
+BankLoan_dataset$Years_in_current_job <- as.numeric(BankLoan_dataset$Years_in_current_job)
+
+```
+
+
+## b) Convert Categorical Variables
+## c) Remove Outliers 
+## d) Remove Null
+
+```{r message=FALSE, warning=FALSE}
+
+# # identify outliers
+# outliers <- boxplot(BankLoan_dataset$Annual_Income, plot=FALSE)$out
+# # remove outliers
+# BankLoan_dataset <- BankLoan_dataset[-which(BankLoan_dataset$Annual_Income %in% outliers), ] 
+#
+```
+We cannot remove outliers for individual feature one at a time, because after removing the outliers, some of the records are removing. The rows will be mismatched when we combine the features together. Therefore, we have to use the pipe function like below.
+
+```{r message=FALSE, warning=FALSE}
+# show outliers before removing them
+histogram(BankLoan_dataset$Annual_Income)
+
+bankloan <- BankLoan_dataset %>%
+  # convert string feature into categorical factors
+  mutate_if(is.character, as.factor) %>% 
+  
+  # remove the nulls
+  drop_na() %>%
+
+  ### Remove outliers
+  # Annual_Income
+  filter(between(Annual_Income, 
+                 quantile(Annual_Income, 0.25) - 1.5* IQR(Annual_Income),
+                 quantile(Annual_Income, 0.75) + 1.5* IQR(Annual_Income))) %>%
+  # Current_Loan_Amount
+  filter(between(Current_Loan_Amount, 
+                 quantile(Current_Loan_Amount, 0.25) - 1.5* IQR(Current_Loan_Amount),
+                 quantile(Current_Loan_Amount, 0.75) + 1.5* IQR(Current_Loan_Amount))) %>%
+  # Credit_Score
+  filter(between(Credit_Score, 
+                 quantile(Credit_Score, 0.25) - 1.5* IQR(Credit_Score),
+                 quantile(Credit_Score, 0.75) + 1.5* IQR(Credit_Score))) %>%
+  #Number_of_Credit_Problems (there is an outlier of 15)
+  filter(between(Number_of_Credit_Problems, 
+                 quantile(Number_of_Credit_Problems, 0.25) - 1.5* IQR(Number_of_Credit_Problems),
+                 4)) %>%
+  # Monthly_Debt
+  filter(between(Monthly_Debt, 
+               quantile(Monthly_Debt, 0.25) - 1.5* IQR(Monthly_Debt),
+               quantile(Monthly_Debt, 0.75) + 1.5* IQR(Monthly_Debt))) %>%
+
+  # Maximum_Open_Credit
+  filter(between(Maximum_Open_Credit, 
+               quantile(Maximum_Open_Credit, 0.25) - 1.5* IQR(Maximum_Open_Credit),
+               quantile(Maximum_Open_Credit, 0.75) + 1.5* IQR(Maximum_Open_Credit))) %>%
+    
+  #remove null after filling outliers with NA
+  drop_na()
+
+knitr::kable(str(bankloan))
+knitr::kable(summary(bankloan))
+
+#check if there is null
+is.null(bankloan)
+
+# showing no outliers
+histogram(bankloan$Annual_Income)
+
+```
+
+Histogram shows outliers are removed. Annual income is skewed right. After removing outliers and Null values, there are still 26,500 data left to work with.
+
+
+# STEP 3: STATISTICAL SUMMARY
+
+## a) Graphical Summary
+```{r message=FALSE, warning=FALSE}
+# BAR graph for categorical variables
+
+ggplot(bankloan, aes(x=Purpose)) +
+  geom_bar() +
+  coord_flip()
+
+gg_status <- ggplot(bankloan, aes(x=Loan_Status)) +
+  geom_bar()
+
+gg_home <- ggplot(bankloan, aes(x=Home_Ownership)) +
+  geom_bar() +
+  coord_flip()
+
+gg_problem <- ggplot(bankloan, aes(x=Number_of_Credit_Problems)) +
+  geom_bar() 
+
+gg_job <- ggplot(bankloan, aes(x=Years_in_current_job)) +
+  geom_bar() 
+
+# arrange multiple plots in one figure  
+figure <- ggarrange(gg_status, gg_home, gg_problem, gg_job,
+                    ncol = 2, nrow = 2,
+                    legend="none")
+figure
+
+
+# Boxplot for quantitative variables
+ggplot(bankloan, aes(x=Loan_Status, y=Annual_Income)) +
+  geom_boxplot()
+
+ggplot(bankloan, aes(x=Loan_Status, y=Current_Loan_Amount)) +
+  geom_boxplot()
+
+ggplot(bankloan, aes(x=Loan_Status, y=Credit_Score)) +
+  geom_boxplot()
+
+ggplot(bankloan, aes(x=Loan_Status, y=Monthly_Debt)) +
+  geom_boxplot()
+
+```
+
+From the bar graphs, we can see that the data is imbalanced, Paid Fully is much more than Charge Off. The home_ownership is have_mortgage most and rent is secondly. Most people have zero number of credit problems. Most people work 10+ years in current job. The most purpose of loans is Debt Consolidation.
+
+From the Boxplots, comparing annual income, current loan amount, monthly debt and credit score, annual income seems to be the biggest difference between Fully Paid and Charged Off customers.
+
+
+## b) Numerical Summary
+```{r message=FALSE, warning=FALSE}
+# proportion of Paid-fully and Charged-off
+table(bankloan$Loan_Status)
+round(prop.table(table(bankloan$Loan_Status)) * 100, 1)
+
+# Average group by loan status
+# Annual_Income is column5, credit score is column4
+aggregate(bankloan[, 4:5], list(bankloan$Loan_Status), median)
+
+```
+
+Numerical statistics shows Fully Paid is 81.8% of the total data. The median annual income for fully paid customers is 1.23M and 1.12M for charged off customers. Credit Score is similar in both classes. Since the annual income is right-skew, median is used instead of mean.
+
+
+# STEP 4: IMPLEMENTING NEURAL NETWORK
+
+## a) Using Original Imbalanced Data
+```{r message=FALSE, warning=FALSE}
+set.seed(9650)
+
+# Divide into train and test sets
+# Make it dataframe instead of list
+indexTrain <- createDataPartition(y=bankloan$Loan_Status, p=0.75, list=FALSE) 
+training <- bankloan[indexTrain, ]
+testing <- bankloan[-indexTrain, ]
+
+# Since there are 26000 of data, take a subset of data for computation efficiency
+train_sub <- training[1:1000, ]
+test_sub <- testing[1:300, ]
+
+
+# cross-validation for parameter selection
+trainingParameters <- trainControl(method='repeatedcv', number=10, repeats=3)
+
+# Train with nnet. nnet package by default uses the Logistic/Sigmoid Activation function
+nn_model <- train(Loan_Status ~ ., train_sub,
+                  method='nnet',
+                  trControl=trainingParameters,
+                  preProcess=c('BoxCox', 'center', 'scale'),
+                  na.action=na.omit,
+                  trace=FALSE,
+                  verbose=FALSE)
+
+# Size: number of hidden layers
+# Decay: is the regularization factor that offset overfitting
+# Kappa: evaluates the match is significant or by chance
+print(nn_model)
+
+# Making predictions on test set, predictor feature is in column 1
+prediction <- predict(nn_model, test_sub[-1])
+confusionMatrix(prediction, test_sub$Loan_Status)
+```
+Although accuracy says 80%, the sensitivity is 0%. So ALL the negative class (Charged Off) is wrongly classified as positive class (Fully Paid). That means the model cannot predict anything. 
+
+## b) IMPROVEMENT: Using Balanced Data 
+by Downsampling
+```{r message=FALSE, warning=FALSE}
+set.seed(9650)
+
+# Divide data into train and test sets
+indexTrain <- createDataPartition(y=bankloan$Loan_Status, p=0.75, list=FALSE) 
+training <- bankloan[indexTrain, ]
+testing <- bankloan[-indexTrain, ]
+
+# Downsampling to balance data
+train <- downSample(x=training[, -ncol(training)], y=training$Loan_Status)
+test <- downSample(x=testing[, -ncol(testing)], y=testing$Loan_Status)
+
+# Need shuffling data, top half of the data is one class and the bottom half is the other
+train <- train[sample(nrow(train)), ]
+test <- test[sample(nrow(test)), ]
+
+# Since there are 26000 of data, take a subset of data for computation efficiency
+train_sub <- train[1:1000, ]
+test_sub <- test[1:300, ]
+
+table(train_sub$Loan_Status)
+table(test_sub$Loan_Status)
+
+
+# cross-validation for parameter selection
+trainingParameters <- trainControl(method='repeatedcv', number=10, repeats=3)
+
+# Train with nnet, nnet package by default uses the Logistic/Sigmoid Activation function
+nn_model <- train(Loan_Status ~ ., train_sub,
+                  method='nnet', 
+                  trControl=trainingParameters,
+                  preProcess=c('BoxCox', 'center', 'scale'),
+                  na.action=na.omit,
+                  trace=FALSE,
+                  verbose=FALSE)
+
+# Size: number of hidden layers
+# Decay: is the regularization factor that offset overfitting
+# Kappa: evaluates the match is significant or by chance
+print(nn_model)
+
+# Making predictions on test set, predictor feature is in column 1
+prediction <- predict(nn_model, test_sub[-1])
+#pred <- predict(nn_model, test_sub[, -c('Loan_Status')])
+confusionMatrix(prediction, test_sub$Loan_Status)
+
+# Visualizing Neural Network
+plotnet(nn_model, y_names = 'Loan Status')
+title('Graphical Representation of Neual Network')
+```
+
+
+With the balanced data, the nnet model easily predicts with 100% accuracy.
+
+# STEP 5: CREATING AND COMPARING ALGORITHMS
+ 
+## a) Simple Approach
+```{r message=FALSE, warning=FALSE}
+library(MASS) # for lda
+
+# Set up cross-validation for optimal parameters
+controlParameters <- trainControl(method = 'repeatedcv', number = 10, repeats = 3)
+
+# nnet - nnet package by default uses the Logistic/Sigmoid Activation function
+set.seed(9650)
+fit.nnet <- train(Loan_Status~., data=train_sub, method = 'nnet', trControl = controlParameters, trace=FALSE)
+
+# SVM - Support Vector Machine with Radial Basis Function Kernel 
+set.seed(9650)
+fit.svm <- train(Loan_Status~., data=train_sub, method = 'svmRadial', trControl = controlParameters)
+
+# glmnet - Lasso and Elastic-Net Regularized Generalized Linear Models
+set.seed(9650)
+fit.glmnet <- train(Loan_Status~., data=train_sub, method = 'glmnet', trControl = controlParameters)
+
+# Random Forest
+set.seed(9650)
+fit.rf <- train(Loan_Status~., data = train_sub, method = 'rf', trControl = controlParameters)
+
+# k-NN
+set.seed(9650)
+fit.knn <- train(Loan_Status~., data = train, method = 'knn', trControl = controlParameters)
+
+# Comparing algorithms
+algo_results <- resamples(list(NNET=fit.nnet, SVM=fit.svm, GLMNET=fit.glmnet, RF=fit.rf, kNN=fit.knn))
+
+summary(algo_results)
+
+# Visualization
+scales <- list(x=list(relation='free'), y=list(relation='free'))
+bwplot(algo_results, scales = scales)
+
+splom(algo_results)
+
+# Difference of pair-wise comparisons. p-value is lower diagonal, subtraction is upper diagonal
+diffs <- diff(algo_results)
+summary(diffs)
+
+```
+Comparing Neural Network (nnet), SVM, glmnet, Random Forest and k-NN, RF and glmnet both have 100% accuracy and Kappa. nnet, SVM and kNN have similar poor accuracy of 53%. 
+
+## b) IMPROVING nnet, SVM and kNN
+By normalizing, center and scale at pre-processing
+
+```{r warning=FALSE, message=FALSE}
+
+# Cross Validation for settig up parameters
+controlParameters <- trainControl(method = 'repeatedcv', number = 10, repeats = 3)
+
+# Improving nnet
+set.seed(9650)
+fit.nnet.preProc <- train(Loan_Status~., data=train_sub, method = 'nnet', trControl=controlParameters, preProcess=c('BoxCox', 'center', 'scale'), trace=FALSE)
+
+# Improving SVM
+set.seed(9650)
+fit.svm.preProc <- train(Loan_Status~., data=train_sub, method='svmRadial', trControl=controlParameters, preProcess=c('BoxCox', 'center', 'scale'))
+
+# Improving k-NN
+set.seed(9650)
+fit.knn.preProc <- train(Loan_Status~., data=train_sub, method='knn', trControl=controlParameters, preProcess=c('BoxCox', 'center', 'scale'))
+
+# Comparing first results with improved results
+algo_results2 <- resamples(list(NNET=fit.nnet, NNET2=fit.nnet.preProc, SVM=fit.svm, SVM2=fit.svm.preProc, kNN=fit.knn, kNN2=fit.knn.preProc))
+
+summary(algo_results2)
+
+# Comparing the best results of each algorithm
+algo_results_final <- resamples(list(NNET2=fit.nnet.preProc, SVM2=fit.svm.preProc, GLMNET=fit.glmnet, RF=fit.rf, kNN2=fit.knn.preProc))
+
+summary(algo_results_final)
+ 
+# Visualization
+scales <- list(x=list(relation='free'), y=list(relation='free'))
+bwplot(algo_results_final, scales=scales)
+
+splom(algo_results_final)
+
+# Cannot compare all these algorithms after preProcess
+algo_results3 <- resamples(list(NNET2=fit.nnet.preProc, SVM2=fit.svm.preProc, kNN2=fit.knn.preProc))
+  
+diffs2 <- diff(algo_results3)
+diffs2
+```
+With pre-processing, nnet, SVM and kNN are much improved. In the last section, their accuracy were ~53%, now the median of nnet is 100%, SVM is 98% and kNN is 95%. 
+
+# CONCLUSION AND DISCUSSION
+In summary, Neural Network with Sigmoid activation function (nnet) gives sensitivity of 0% with the original imbalanced data. After improvement with balanced data, nnet achieved 100% accuracy and Kappa. Comparing different algorithms, Random Forest and glmnet (Lasso and elastic-net generalized linear models) achieve 100% accuracy and Kappa with a simple model. nnet, SVM and k-NN gives poor results (~53%) with a simple model. However, they achieve 95%-100% accuracy after improvement with preProcess.
+
+One weakness of this dataset is that the two classes are imbalanced, with 82% of data are Fully Paid and 18% Charged Off. That's because most people are able to pay back money on time. However, this weakness can be mitigated by resampling techniques.
+
+In the future, it would be nice to get Deep Learning working on my dataset. I was able to download keras and tensorflow packages on my computer. And I was able to run your Deep Learning code with the MNIST (handwriting images for 0-9 digits) and I was getting results. However, I was not able to get tensorflow code working on my bank loan status dataset. I also tried some of the examples from the Statistical Learning with R by Trevor Hastie et al.[1], but I was not able to get those codes running either. I would need more understanding with Tensorflow and Deep Learning in order to better understand the code. 
+
+On the other hand, although Deep Learning may better model the complex real-life scenarios, it is difficult to interpret and its accuracy is still only 70% with current technology [1]. Since my data can be predicted with 100% accuracy with RF, nnet, glmnet, and many other techniques, a simple model would be preferred over a complex model like Deep Learning. For other applications like image processing or voice recognition, deep learning could be more applicable.
+
+# REFERENCE
+1. An Introduction to Statistical Learning with Applications in R, Second Edition, Gareth JameS, Daniela Witten, Trevor Hastie, Robert Tibshirani
+https://web.stanford.edu/~hastie/ISLRv2_website.pdf
+
