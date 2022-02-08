@@ -1,0 +1,426 @@
+---
+title: "<center>Implementing Naive Bayes Algorithms</center>"
+subtitle: "<center>Using Bank Loan Dataset</center>"
+date: "<center>`r format(Sys.time(), '%B %Y')`</center>"
+author: "<center>Sophia Tang Hart</center>"
+output:  # html_notebook
+  html_document:
+      theme: journal
+      toc: yes
+      toc_depth: 4
+      #toc_float: true
+  word_document:
+      toc: yes
+      toc_depth: 4
+      #toc_float: true
+  pdf_document:
+      toc: yes
+      theme: journal
+      toc_depth: 4
+      #toc_float: true
+---
+
+
+# OBJECTIVE AND DATA DESCRIPTION
+**Background: **
+
+Banks loan out money to customers to finance a car, a house, pay for education, consolidate loans, etc. Borrowers agree to pay back the money with an interest on a monthly basis. Sometimes, due to unexpected circumstances, some borrowers are not able to pay back the money. 
+
+
+**Research Objectives: **
+
+The banks would want to see what is the pattern in the customers to predict if a customer can pay back the loan, so the bank knows who to lend out the money. I would like to predict if any customer goes to a bank, should the bank loan out the money to the customer base on model learned from this dataset. 
+
+
+**Research Questions: ** 
+
+1. What factors contribute/correlated most to bank loan status?
+
+2. Can we predict if a borrower will be able to pay the debt in full?
+
+3. What Machine Learning algorithms perform best in the prediction? (First Guess)
+
+4. Optimize all (or the best) algorithms. With the fine tuned hyperparameters, what is the best prediction performance? Which algorithm?
+
+
+**Dataset**
+
+The dataset is taken from Kaggle (https://www.kaggle.com/zaurbegiev/my-dataset). There are over 100,000 rows and 19 columns (features) in this dataset. The predicted feature variable is Loan_Status, which is a categorical variable with value either "Fully Paid" or "Charged off". Fully Paid means the borrower can pay back the debt, while charged off means the borrower is unlikely pay the bank after a substantial delinquent for a period of time. The remainder of the debt is sometimes collected by a third-party agency.
+ 
+
+LoanID,
+
+CustomerID,
+
+Loan_Status,
+
+Current_Loan_Amount,
+
+Term,
+
+Credit_Score,
+
+Annual_Income,
+
+Years_in_current_job,
+
+Home_Ownership,
+
+Purpose,
+
+Monthly_Debt,
+
+Years_of_Credit_History,
+
+Months_since_last_delinquent,
+
+Number_of_Open_Accounts,
+
+Number_of_Credit_Problems,
+
+Current_Credit_Balance,
+
+Maximum_Open_Credit,
+
+Bankruptcies,
+
+Tax_Liens
+
+
+# STEP 1: LOADING LIBRARIES AND DATA
+```{r message=FALSE, warning=FALSE}
+library(caret)
+library(dplyr)
+library(tidyverse)
+library(mlbench)
+#library(gmodels)
+# for multiple plots in one figure (ggarrange)
+library(ggpubr)
+library(ggplot2)
+library(lattice)
+
+library(naivebayes)
+```
+
+## Examing data
+```{r message=FALSE, warning=FALSE}
+
+# Clear memory
+rm(list=ls())
+
+# read in data
+BankLoan_dataset <- read.csv("LoanStatus.csv")
+
+# remove unrelevant fields
+BankLoan_dataset <- subset(BankLoan_dataset, select=-c(LoanID, CustomerID))
+
+# data structure
+knitr::kable(str(BankLoan_dataset))
+
+# data summary
+knitr::kable(head(BankLoan_dataset))
+knitr::kable(summary(BankLoan_dataset))
+```
+
+# STEP 2: DATA PREPROCESSING
+
+## a) Convert to numeric values
+```{r message=FALSE, warning=FALSE}
+
+BankLoan_dataset$Years_in_current_job = extract_numeric(BankLoan_dataset$Years_in_current_job)
+BankLoan_dataset$Years_in_current_job <- as.numeric(BankLoan_dataset$Years_in_current_job)
+
+```
+
+
+## b) Convert Categorical Variables
+## c) Remove Outliers 
+## d) Remove Null
+
+```{r message=FALSE, warning=FALSE}
+
+# # identify outliers
+# outliers <- boxplot(BankLoan_dataset$Annual_Income, plot=FALSE)$out
+# # remove outliers
+# BankLoan_dataset <- BankLoan_dataset[-which(BankLoan_dataset$Annual_Income %in% outliers), ] 
+#
+```
+We cannot remove outliers for individual feature one at a time, because after removing the outliers, some of the records are removing. The rows will be mismatched when we combine the features together. Therefore, we have to use the pipe function like below.
+
+```{r message=FALSE, warning=FALSE}
+# show outliers before removing them
+histogram(BankLoan_dataset$Annual_Income)
+
+bankloan <- BankLoan_dataset %>%
+  # convert string feature into categorical factors
+  mutate_if(is.character, as.factor) %>% 
+  
+  # remove the nulls
+  drop_na() %>%
+
+  ### Remove outliers
+  # Annual_Income
+  filter(between(Annual_Income, 
+                 quantile(Annual_Income, 0.25) - 1.5* IQR(Annual_Income),
+                 quantile(Annual_Income, 0.75) + 1.5* IQR(Annual_Income))) %>%
+  # Current_Loan_Amount
+  filter(between(Current_Loan_Amount, 
+                 quantile(Current_Loan_Amount, 0.25) - 1.5* IQR(Current_Loan_Amount),
+                 quantile(Current_Loan_Amount, 0.75) + 1.5* IQR(Current_Loan_Amount))) %>%
+  # Credit_Score
+  filter(between(Credit_Score, 
+                 quantile(Credit_Score, 0.25) - 1.5* IQR(Credit_Score),
+                 quantile(Credit_Score, 0.75) + 1.5* IQR(Credit_Score))) %>%
+  #Number_of_Credit_Problems (there is an outlier of 15)
+  filter(between(Number_of_Credit_Problems, 
+                 quantile(Number_of_Credit_Problems, 0.25) - 1.5* IQR(Number_of_Credit_Problems),
+                 4)) %>%
+  # Monthly_Debt
+  filter(between(Monthly_Debt, 
+               quantile(Monthly_Debt, 0.25) - 1.5* IQR(Monthly_Debt),
+               quantile(Monthly_Debt, 0.75) + 1.5* IQR(Monthly_Debt))) %>%
+
+  # Maximum_Open_Credit
+  filter(between(Maximum_Open_Credit, 
+               quantile(Maximum_Open_Credit, 0.25) - 1.5* IQR(Maximum_Open_Credit),
+               quantile(Maximum_Open_Credit, 0.75) + 1.5* IQR(Maximum_Open_Credit))) %>%
+    
+  #remove null after filling outliers with NA
+  drop_na()
+
+knitr::kable(str(bankloan))
+knitr::kable(summary(bankloan))
+
+#check if there is null
+is.null(bankloan)
+
+# showing no outliers
+histogram(bankloan$Annual_Income)
+
+```
+
+Histogram shows outliers are removed. Annual income is skewed right. After removing outliers and Null values, there are still 26,500 data left to work with.
+
+
+# STEP 3: STATISTICAL SUMMARY
+
+## a) Graphical Summary
+```{r message=FALSE, warning=FALSE}
+# BAR graph for categorical variables
+
+ggplot(bankloan, aes(x=Purpose)) +
+  geom_bar() +
+  coord_flip()
+
+gg_status <- ggplot(bankloan, aes(x=Loan_Status)) +
+  geom_bar()
+
+gg_home <- ggplot(bankloan, aes(x=Home_Ownership)) +
+  geom_bar() +
+  coord_flip()
+
+gg_problem <- ggplot(bankloan, aes(x=Number_of_Credit_Problems)) +
+  geom_bar() 
+
+gg_job <- ggplot(bankloan, aes(x=Years_in_current_job)) +
+  geom_bar() 
+
+# arrange multiple plots in one figure  
+figure <- ggarrange(gg_status, gg_home, gg_problem, gg_job,
+                    ncol = 2, nrow = 2,
+                    legend="none")
+figure
+
+
+# Boxplot for quantitative variables
+ggplot(bankloan, aes(x=Loan_Status, y=Annual_Income)) +
+  geom_boxplot()
+
+ggplot(bankloan, aes(x=Loan_Status, y=Current_Loan_Amount)) +
+  geom_boxplot()
+
+ggplot(bankloan, aes(x=Loan_Status, y=Credit_Score)) +
+  geom_boxplot()
+
+ggplot(bankloan, aes(x=Loan_Status, y=Monthly_Debt)) +
+  geom_boxplot()
+
+```
+
+From the bar graphs, we can see that the data is imbalanced, Paid Fully is much more than Charge Off. The home_ownership is have_mortgage most and rent is secondly. Most people have zero number of credit problems. Most people work 10+ years in current job. The most purpose of loans is Debt Consolidation.
+
+From the Boxplots, comparing annual income, current loan amount, monthly debt and credit score, annual income seems to be the biggest difference between Fully Paid and Charged Off customers.
+
+
+## b) Numerical Summary
+```{r message=FALSE, warning=FALSE}
+# proportion of Paid-fully and Charged-off
+table(bankloan$Loan_Status)
+round(prop.table(table(bankloan$Loan_Status)) * 100, 1)
+
+# Average group by loan status
+# Annual_Income is column5, credit score is column4
+aggregate(bankloan[, 4:5], list(bankloan$Loan_Status), median)
+
+```
+
+Numerical statistics shows Fully Paid is 81.8% of the total data. The median annual income for fully paid customers is 1.23M and 1.12M for charged off customers. Credit Score is similar in both classes. Since the annual income is right-skew, median is used instead of mean.
+
+
+# STEP 4: IMPLEMENTING Naive Bayes
+
+## a) Using Original Imbalanced Data
+```{r message=FALSE, warning=FALSE}
+set.seed(9650)
+
+# Divide into train and test sets
+# Make it dataframe instead of list
+indexTrain <- createDataPartition(y=bankloan$Loan_Status, p=0.75, list=FALSE) 
+training <- bankloan[indexTrain, ]
+testing <- bankloan[-indexTrain, ]
+
+# Since there are 26000 of data, take a subset of data for computation efficiency
+train_sub <- training[1:1000, ]
+test_sub <- testing[1:300, ]
+
+
+# cross-validation for parameter selection
+trainingParameters <- trainControl(method='repeatedcv', number=10, repeats=3)
+
+# Train with nnet. nnet package by default uses the Logistic/Sigmoid Activation function
+nb_model <- train(Loan_Status ~ ., train_sub,
+                  method='naive_bayes',
+                  trControl=trainingParameters,
+                  preProcess=c('BoxCox', 'center', 'scale'),
+                  na.action=na.omit,
+                  trace=FALSE,
+                  verbose=FALSE)
+
+# Size: number of hidden layers
+# Decay: is the regularization factor that offset overfitting
+# Kappa: evaluates the match is significant or by chance
+print(nb_model)
+
+# Making predictions on test set, predictor feature is in column 1
+prediction <- predict(nb_model, test_sub[-1])
+confusionMatrix(prediction, test_sub$Loan_Status)
+```
+Although accuracy says 80%, the sensitivity is 0%. So ALL the negative class (Charged Off) is wrongly classified as positive class (Fully Paid). That means the model cannot predict anything. 
+
+## b) IMPROVING PERFORMANCE: 
+### Using Balanced Data by Downsampling
+```{r message=FALSE, warning=FALSE}
+set.seed(9650)
+
+# Divide data into train and test sets
+indexTrain <- createDataPartition(y=bankloan$Loan_Status, p=0.75, list=FALSE) 
+training <- bankloan[indexTrain, ]
+testing <- bankloan[-indexTrain, ]
+
+# Downsampling to balance data
+train <- downSample(x=training[, -ncol(training)], y=training$Loan_Status)
+test <- downSample(x=testing[, -ncol(testing)], y=testing$Loan_Status)
+
+# Need shuffling data, top half of the data is one class and the bottom half is the other
+train <- train[sample(nrow(train)), ]
+test <- test[sample(nrow(test)), ]
+
+# Since there are 26000 of data, take a subset of data for computation efficiency
+train_sub <- train[1:1000, ]
+test_sub <- test[1:300, ]
+
+table(train_sub$Loan_Status)
+table(test_sub$Loan_Status)
+
+
+# cross-validation for parameter selection
+trainingParameters <- trainControl(method='repeatedcv', number=10, repeats=3)
+
+# Train with nnet, nnet package by default uses the Logistic/Sigmoid Activation function
+nb_model <- train(Loan_Status ~ ., train_sub,
+                  method='naive_bayes', 
+                  trControl=trainingParameters,
+                  preProcess=c('BoxCox', 'center', 'scale'),
+                  na.action=na.omit,
+                  trace=FALSE,
+                  verbose=FALSE)
+
+# Size: number of hidden layers
+# Decay: is the regularization factor that offset overfitting
+# Kappa: evaluates the match is significant or by chance
+print(nb_model)
+
+# Making predictions on test set, predictor feature is in column 1
+nb_prediction <- predict(nb_model, test_sub[-1])
+#pred <- predict(nn_model, test_sub[, -c('Loan_Status')])
+confusionMatrix(nb_prediction, test_sub$Loan_Status)
+
+```
+
+Balancing out the data improves accuracy to 98%, sensitivity to 97% and specificity to 99%. Although Naive Bayes' algorithm may not need to balance out data, in my case, it helps significantly.
+
+
+## c) IMPROVING PERFORMANCE: 
+#### Using Grid 
+```{r message=FALSE, warning=FALSE}
+# Define tunning grid
+nb_grid <- expand.grid(usekernel = c(TRUE, FALSE),
+                       laplace = c(0.01, 0.1, 0.5, 1, 5),
+                       adjust = c(0.1, 0.5, 1, 1.5, 2))
+
+trainingParameters <- trainControl(method = 'repeatedcv', number = 10, repeats = 3)
+
+set.seed(9650)
+nb_model_grid <- train(Loan_Status~., data = train_sub, 
+                       method = 'naive_bayes', 
+                       preProcess = c('BoxCox', 'center', 'scale'),
+                       trControl = trainingParameters,
+                       tuneGrid = nb_grid)
+
+# Prediction
+predictions <- predict(nb_model_grid, data = test_sub)
+confusionMatrix(prediction, test_sub$Loan_Status)
+```
+
+Tuning grid does not improve performance further. It gave the same accuracy of 98%, sensitivity of 97% and specificity of 99%
+
+## d) Statistical Difference Compared with RF
+
+Using student t-test to compare if the 98% acurracy for Naive Bayes model and 100% for Random Forest model is statistically significant or do they happen by chance.
+```{r message=FALSE, warning=FALSE}
+
+set.seed(9650)
+# Train Random Forest model
+rf_model <- train(Loan_Status~., data = train_sub, method = 'rf',
+                  preProcess = c('BoxCox', 'center', 'scale'),
+                  trControl = trainingParameters)
+
+# Predition using RF model
+rf_prediction <- predict(rf_model, data=test_sub)
+
+# t-test to compare if statistically significant
+# First, need to convert to numeric for t.test to work
+nbPredictions <- as.numeric(nb_prediction)
+rfPredictions <- as.numeric(rf_prediction)
+  
+t.test(nbPredictions, rfPredictions, conf.level = 0.95, alternative = 'two.sided')
+
+t.test(nbPredictions, rfPredictions, alternative = 'less')
+
+```
+
+This section is a hypothesis testing to see if Naive Bayes and Random Forest the different performance is statistically significant or is it by chance.
+
+p-value = 0.7 (>0.05) for “Naive Bayes has lower performance than RF”. Therefore, data do not provide enough evidence that Naive Bayes has lower performance than RF.
+
+p-value = 0.64 (>0.05) for “Naive Bayes has different performance than RF”. Therefore, data do not provide enough evidence that Naive Bayes has different performance than RF.
+
+Taken together, the difference of Naive Bayes performance accuracy of 98% and RF performance accuracy of 100% is by chance and not statistically significant.
+
+
+# CONCLUSION AND DISCUSSION
+In conclusion, sensitivity was 0% with the original imbalanced data. Although balanced data is not required for Naive Bayes algorithm, in this case it is. Improvement using balanced data gave 98% accuracy, 97% sensitivity and 99% specificity. Tuning grid for hyperparameters does not improve performance further. Hypothesis testing using student t-test shows the difference in performance between Naive Bayes and Random Forest is not statistically significant.
+
+One weakness of this dataset is that, most features (13 out of 17) are numerical. Naive Bayes works with categorical features only. So internally, the algorithm converts each numerical feature into categorical feature by dividing the range into levels or qualtiles. Despite this weakness, it achieve an accuracy of 98%.  
+
+In the future, it would be interesting to implement Naive Bayes on other data, such as the Spam and Ham data that you showed in class. I attempted to do that, but my dataset (downloaded from Kaggle) contain text that have special characters and emojis. So when I call the tolower() function, it gave me error. I tried different ways to encode the whole text to different format, but it didn't help. However, Naive Bayes was simple to implement with the caret package on my bank loan status dataset. But Natural Language Processing (NLP) could be more challenging.

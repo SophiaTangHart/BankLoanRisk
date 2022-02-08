@@ -1,0 +1,700 @@
+---
+title: "<center>Implementing Random Forest and Other Ensemble Algorithms</center>"
+subtitle: "<center>Using Bank Loan dataset</center>"
+date: "<center>`r format(Sys.time(), '%B %Y')`</center>"
+author: "<center>Sophia Tang Hart</center>"
+output: 
+  html_document:
+      theme: journal
+      toc: yes
+      toc_depth: 4
+      #toc_float: true
+  word_document:
+      toc: yes
+      toc_depth: 4
+      #toc_float: true
+  pdf_document:
+      toc: yes
+      theme: journal
+      toc_depth: 4
+      #toc_float: true
+---
+
+
+# OBJECTIVE AND DATA DESCRIPTION
+**Background: **
+
+Banks loan out money to customers to finance a car, a house, pay for education, consolidate loans, etc. Borrowers agree to pay back the money with an interest on a monthly basis. Sometimes, due to unexpected circumstances, some borrowers are not able to pay back the money. 
+
+
+**Research Objectives: **
+
+For the banks, it would be helpful to see what is the pattern in the customers to predict if a customer can pay back the loan, so the back knows who to lend out the money. I want to predict if any customer goes to a bank, should the bank loan out the money to the customer base on model learned from this dataset. 
+
+
+**Research Questions: ** 
+
+1. What factors contribute/correlated most to bank loan status?
+
+2. Can we predict if a borrower will be able to pay the debt in full?
+
+3. What Machine Learning algorithms perform best in the prediction? (First Guess)
+
+4. Optimize all (or the best) algorithms. With the fine tuned hyperparameters, what is the best prediction performance? Which algorithm?
+
+
+**Dataset**
+
+The dataset is taken from Kaggle (https://www.kaggle.com/zaurbegiev/my-dataset). There are over 100,000 rows and 19 columns (features) in this dataset. The predicted feature variable is Loan_Status, which is a categorical variable with value either "Fully Paid" or "Charged off". Fully Paid means the borrower can pay back the debt, while charged off means the borrower is unlikely pay the bank after a substantial delinquent for a period of time. The remainder of the debt is sometimes collected by a third-party agency.
+ 
+
+LoanID,
+
+CustomerID,
+
+Loan_Status,
+
+Current_Loan_Amount,
+
+Term,
+
+Credit_Score,
+
+Annual_Income,
+
+Years_in_current_job,
+
+Home_Ownership,
+
+Purpose,
+
+Monthly_Debt,
+
+Years_of_Credit_History,
+
+Months_since_last_delinquent,
+
+Number_of_Open_Accounts,
+
+Number_of_Credit_Problems,
+
+Current_Credit_Balance,
+
+Maximum_Open_Credit,
+
+Bankruptcies,
+
+Tax_Liens
+
+
+# STEP 1: LOAD LIBRARIES AND DATA
+```{r message=FALSE, warning=FALSE}
+library(caret)
+library(dplyr)
+library(tidyverse)
+library(mlbench)
+library(gmodels)
+# for multiple plots in one figure (ggarrange)
+library(ggpubr)
+library(ROSE)
+# for method=ranger of Random Forest
+library(ranger)
+library(e1071)
+# for gradient boosting
+library(C50)
+library(plyr)
+library(gbm)
+# for caretList
+library(rpart)
+library(caretEnsemble)
+library(nnet)
+library(pROC)
+
+
+```
+
+### Examing data
+```{r message=FALSE, warning=FALSE}
+
+# Clear memory
+rm(list=ls())
+
+# read in data
+BankLoan_dataset <- read.csv("LoanStatus.csv")
+
+# remove unrelevant fields
+BankLoan_dataset <- subset(BankLoan_dataset, select=-c(LoanID, CustomerID))
+
+# data structure
+str(BankLoan_dataset)
+
+# data summary
+summary(BankLoan_dataset)
+```
+
+# STEP 2: DATA PREPROCESSING
+
+## a) Convert to numeric values
+```{r}
+
+BankLoan_dataset$Years_in_current_job = extract_numeric(BankLoan_dataset$Years_in_current_job)
+BankLoan_dataset$Years_in_current_job <- as.numeric(BankLoan_dataset$Years_in_current_job)
+
+```
+
+
+## b) Convert Categorical Variables
+## c) Remove Outliers 
+## d) Remove Null
+
+```{r message=FALSE, warning=FALSE}
+
+# # identify outliers
+# outliers <- boxplot(BankLoan_dataset$Annual_Income, plot=FALSE)$out
+# # remove outliers
+# BankLoan_dataset <- BankLoan_dataset[-which(BankLoan_dataset$Annual_Income %in% outliers), ] 
+#
+```
+We cannot remove outliers for individual feature one at a time, because after removing the outliers, some of the records are removing. The rows will be mismatch when we combine the features together. Therefore, we have to use the pipe function like below.
+
+```{r message=FALSE, warning=FALSE}
+# show outliers before removing them
+histogram(BankLoan_dataset$Annual_Income)
+
+bankloan <- BankLoan_dataset %>%
+  # convert string feature into categorical factors
+  mutate_if(is.character, as.factor) %>% 
+  
+  # remove the nulls
+  drop_na() %>%
+
+  ### Remove outliers
+  # Annual_Income
+  filter(between(Annual_Income, 
+                 quantile(Annual_Income, 0.25) - 1.5* IQR(Annual_Income),
+                 quantile(Annual_Income, 0.75) + 1.5* IQR(Annual_Income))) %>%
+  # Current_Loan_Amount
+  filter(between(Current_Loan_Amount, 
+                 quantile(Current_Loan_Amount, 0.25) - 1.5* IQR(Current_Loan_Amount),
+                 quantile(Current_Loan_Amount, 0.75) + 1.5* IQR(Current_Loan_Amount))) %>%
+  # Credit_Score
+  filter(between(Credit_Score, 
+                 quantile(Credit_Score, 0.25) - 1.5* IQR(Credit_Score),
+                 quantile(Credit_Score, 0.75) + 1.5* IQR(Credit_Score))) %>%
+  #Number_of_Credit_Problems (there is an outlier of 15)
+  filter(between(Number_of_Credit_Problems, 
+                 quantile(Number_of_Credit_Problems, 0.25) - 1.5* IQR(Number_of_Credit_Problems),
+                 4)) %>%
+  # Monthly_Debt
+  filter(between(Monthly_Debt, 
+               quantile(Monthly_Debt, 0.25) - 1.5* IQR(Monthly_Debt),
+               quantile(Monthly_Debt, 0.75) + 1.5* IQR(Monthly_Debt))) %>%
+  
+  #remove null after filling outliers with NA
+  drop_na()
+
+str(bankloan)
+summary(bankloan)
+
+#check if there is null
+is.null(bankloan)
+
+# showing no outliers
+histogram(bankloan$Annual_Income)
+
+```
+
+Histogram shows outliers are removed. Annual income is skewed right. After removing outliers and Null values, there are still 26,500 data left to work with.
+
+
+# STEP 3: STATISTICAL SUMMARY
+
+## a) Graphical Summary
+```{r message=FALSE, warning=FALSE}
+# BAR graph for categorical variables
+
+ggplot(bankloan, aes(x=Purpose)) +
+  geom_bar() +
+  coord_flip()
+
+gg_status <- ggplot(bankloan, aes(x=Loan_Status)) +
+  geom_bar()
+
+gg_home <- ggplot(bankloan, aes(x=Home_Ownership)) +
+  geom_bar() +
+  coord_flip()
+
+gg_problem <- ggplot(bankloan, aes(x=Number_of_Credit_Problems)) +
+  geom_bar() 
+
+gg_job <- ggplot(bankloan, aes(x=Years_in_current_job)) +
+  geom_bar() 
+
+# arrange multiple plots in one figure  
+figure <- ggarrange(gg_status, gg_home, gg_problem, gg_job,
+                    ncol = 2, nrow = 2,
+                    legend="none")
+figure
+
+
+# Boxplot for quantitative variables
+ggplot(bankloan, aes(x=Loan_Status, y=Annual_Income)) +
+  geom_boxplot()
+
+ggplot(bankloan, aes(x=Loan_Status, y=Current_Loan_Amount)) +
+  geom_boxplot()
+
+ggplot(bankloan, aes(x=Loan_Status, y=Credit_Score)) +
+  geom_boxplot()
+
+ggplot(bankloan, aes(x=Loan_Status, y=Monthly_Debt)) +
+  geom_boxplot()
+
+```
+From the bar graphs, we can see that the data is imbalanced, Paid Fully is much more than Charge Off. The home_ownership is have_mortgage most and rent is secondly. Most people have zero number of credit problems. Most people work 10+ years in current job. The most purpose of loans is Debt Consolidation.
+
+From the Boxplots, comparing annual income, current loan amount, monthly debt and credit score, annual income seems to be the biggest difference between Fully Paid and Charged Off customers.
+
+
+## b) Numerical Summary
+```{r message=FALSE, warning=FALSE}
+# proportion of Paid-fully and Charged-off
+table(bankloan$Loan_Status)
+round(prop.table(table(bankloan$Loan_Status)) * 100, 1)
+
+# Average group by loan status
+# Annual_Income is column5, credit score is column4
+aggregate(bankloan[, 4:5], list(bankloan$Loan_Status), median)
+
+```
+
+Numerical statistics shows Fully Paid is 81.8% of the total data. The median annual income for fully paid customers is 1.23M and 1.12M for charged off customers. Since the annual income is right-skew, median is used instead of mean.
+
+
+# STEP 4: IMPLEMENTING RANDOM FOREST ALGORITHM 
+
+## a) Using All Numeric Feature Variables
+                        
+```{r message=FALSE, warning=FALSE}
+set.seed(9650)
+
+# Divide data into train and test sets
+indexTrain <- createDataPartition(y=bankloan$Loan_Status, p=0.75, list=FALSE) 
+training <- bankloan[indexTrain, ]
+testing <- bankloan[-indexTrain, ]
+
+# Number of variables randomly sampled as candidates at each split.
+mtry = sqrt(ncol(training))
+
+# setting the mtry value
+tunegrid <- expand.grid(mtry=mtry)
+
+# Cross Validation for parameter tuning
+fitControl <- trainControl(method='repeatedcv', number=10, repeats=1)
+
+# train the model
+RFfit <- train(Loan_Status~., data=training, method='rf', ntree=100, tunegrid=tunegrid, trControl=fitControl, preProcess=c("center", "scale", "BoxCox"))
+
+#print output
+RFfit
+plot(RFfit)
+
+# Prediction
+RFpredict <- predict(RFfit, newdata=testing)
+
+# confusion matrix to see accuracy and other parameter values
+confusionMatrix(RFpredict, testing$Loan_Status)
+
+# compute accuracy by comparing prediction with actual classification
+mean(RFpredict == testing$Loan_Status)
+
+```
+
+Even though accuracy is 81.7%, from the confusion matrix, we see that all Charged Off is mispredicted as Fully Paid.  This is because data is imbalance with 82% are Fully Paid. "BoxCox" method is applied to transform data into normal distribution, since by default z-score standardization works for normal distributed data. 
+
+
+## b) Random Search
+```{r message=FALSE, warning=FALSE}
+# Number of variables randomly sampled as candidates at each split.
+mtry = sqrt(ncol(training))
+
+# setting the mtry value
+tunegrid <- expand.grid(mtry=mtry)
+
+# Cross Validation for parameter tuning
+fitControl <- trainControl(method='repeatedcv', number=10, search="random")
+
+# train the model
+RFfit <- train(Loan_Status~., data=training, method='rf', ntree=100, tunegrid=tunegrid, trControl=fitControl, preProcess=c("center", "scale", "BoxCox"), metric="Accuracy")
+
+#print output
+RFfit
+plot(RFfit)
+
+# Prediction
+RFpredict <- predict(RFfit, newdata=testing)
+
+# confusion matrix to see accuracy and other parameter values
+confusionMatrix(RFpredict, testing$Loan_Status)
+
+# compute accuracy by comparing prediction with actual classification
+mean(RFpredict == testing$Loan_Status)
+```
+Random Search also gives poor results.
+
+## c) Different Version of Random Forest
+
+```{r message=FALSE, warning=FALSE}
+# Number of variables randomly sampled as candidates at each split.
+mtry = sqrt(ncol(training))
+
+# setting the mtry value
+tunegrid <- expand.grid(mtry=mtry)
+
+# Cross Validation for parameter tuning
+fitControl <- trainControl(method='repeatedcv', number=10, repeats=1)
+
+# train the model
+RFfit5 <- train(Loan_Status~., data=training, method='ranger', trControl=fitControl, preProcess=c("center", "scale", "BoxCox"))
+
+#print output
+RFfit
+plot(RFfit)
+
+# Prediction
+RFpredict <- predict(RFfit, newdata=testing)
+
+# confusion matrix to see accuracy and other parameter values
+confusionMatrix(RFpredict, testing$Loan_Status)
+
+# compute accuracy by comparing prediction with actual classification
+mean(RFpredict == testing$Loan_Status)
+
+```
+The ranger version of Random Forest still gives poor results.
+
+
+# STEP 5: PERFORMANCE IMPROVEMENT 
+My data are imbalanced, 81% is "fully Paid". This is the reason most "Charge Off" class is wrongly predicted as "Fully Paid". However, sensitivity = 0 from previous two models. This is very poor.
+
+## a) Balancing Data by Downsampling
+
+```{r message=FALSE, warning=FALSE}
+set.seed(9650)
+
+# Divide data into train and test sets
+indexTrain <- createDataPartition(y=bankloan$Loan_Status, p=0.75, list=FALSE) 
+training <- bankloan[indexTrain, ]
+testing <- bankloan[-indexTrain, ]
+
+table(training$Loan_Status)
+
+# Downsampling to balance data
+down_train <- downSample(x=training[, -ncol(training)], y=training$Loan_Status)
+down_test <- downSample(x=testing[, -ncol(testing)], y=testing$Loan_Status)
+
+table(down_train$Loan_Status)
+table(down_test$Loan_Status)
+
+# Number of variables randomly sampled as candidates at each split.
+mtry = sqrt(ncol(training))
+
+# setting the mtry value
+tunegrid <- expand.grid(mtry=mtry)
+
+# Cross Validation for parameter tuning
+fitControl <- trainControl(method='repeatedcv', number=10, repeats=1)
+
+# train the model
+RFfit_down <- train(Loan_Status~., data=down_train, method='rf', ntree=100, tunegrid=tunegrid, trControl=fitControl, preProcess=c("center", "scale", "BoxCox"))
+
+#print output
+RFfit_down
+plot(RFfit_down)
+
+# Prediction
+RFpredict_down <- predict(RFfit_down, newdata=down_test)
+
+# confusion matrix to see accuracy and other parameter values
+confusionMatrix(RFpredict_down, down_test$Loan_Status)
+
+# compute accuracy by comparing prediction with actual classification
+mean(RFpredict_down == down_test$Loan_Status)
+
+
+```
+
+Balancing data by downsampling improves performance to 100%. There are 1200 test samples in each class. It's remarkable that all 2400 test samples are classified correctly!
+
+## b) Different Version of Random Forest
+```{r message=FALSE, warning=FALSE}
+
+set.seed(9650)
+# Divide data into train and test sets
+indexTrain <- createDataPartition(y=bankloan$Loan_Status, p=0.75, list=FALSE) 
+training <- bankloan[indexTrain, ]
+testing <- bankloan[-indexTrain, ]
+
+# Downsampling to balance data
+down_train <- downSample(x=training[, -ncol(training)],
+                         y=training$Loan_Status)
+down_test <- downSample(x=testing[, -ncol(testing)],
+                         y=testing$Loan_Status)
+
+# Cross Validation for parameter tuning
+fitControl <- trainControl(method='repeatedcv', number=10, repeats=1)
+
+# train the model
+RFfit <- train(Loan_Status~., data=training, method='ranger', trControl=fitControl, preProcess=c("center", "scale", "BoxCox"))
+
+#print output
+RFfit
+plot(RFfit)
+
+# Prediction
+RFpredict <- predict(RFfit, newdata=testing)
+
+# confusion matrix to see accuracy and other parameter values
+confusionMatrix(RFpredict, testing$Loan_Status)
+
+# compute accuracy by comparing prediction with actual classification
+mean(RFpredict == testing$Loan_Status)
+
+```
+The 'ranger' version of Random Forest does not give as good results as 'rf'
+
+# STEP 6: TUNING HYPERPARAMETERS OF RANDOM FOREST
+
+## a) Grid for mtry
+```{r message=FALSE, warning=FALSE}
+
+set.seed(9650)
+
+# Number of variables randomly sampled as candidates at each split.
+# setting the mtry grid
+tunegrid <- expand.grid(.mtry=c(1:10))
+
+# Cross Validation for parameter tuning
+fitControl <- trainControl(method='repeatedcv', number=10, repeats=1)
+
+# train the model
+RFfit_mtry <- train(Loan_Status~., data=down_train, method='rf', ntree=100, tunegrid=tunegrid, trControl=fitControl, preProcess=c("center", "scale", "BoxCox"))
+
+#print output
+RFfit_mtry
+plot(RFfit_mtry)
+
+# Prediction
+RFpredict_mtry <- predict(RFfit_mtry, newdata=down_test)
+
+# confusion matrix to see accuracy and other parameter values
+confusionMatrix(RFpredict_mtry, down_test$Loan_Status)
+
+# compute accuracy by comparing prediction with actual classification
+mean(RFpredict_mtry == down_test$Loan_Status)
+
+```
+The grid for mtry shows 100% accuracy for most values. mtry=2 gives slightly less great performance.
+
+## b) Trying Different ntree
+
+```{r message=FALSE, warning=FALSE}
+
+set.seed(9650)
+
+# Number of variables randomly sampled as candidates at each split.
+# setting the mtry grid
+tunegrid <- expand.grid(.mtry=sqrt(ncol(down_train)))
+
+modellist <- list()
+# Cross Validation for parameter tuning
+fitControl <- trainControl(method='repeatedcv', number=10, repeats=1, search = 'grid')
+
+# train the model 
+# try different number of trees
+for (ntree in c(500, 1000, 2000)) {
+  set.seed(9650)
+  RFfit_ntree <- train(Loan_Status~., data=down_train, method='rf', ntree=ntree, tunegrid=tunegrid, trControl=fitControl, preProcess=c("center", "scale", "BoxCox"))
+  key <- toString(ntree)
+  modellist[[key]] <- RFfit_ntree
+}
+
+#print output
+results <- resamples(modellist)
+summary(results)
+dotplot(results)
+
+# Prediction
+RFpredict_ntree <- predict(modellist, down_test)
+pred <- RFpredict_ntree$`1000`
+# confusion matrix to see accuracy and other parameter values
+confusionMatrix(as.factor(pred), as.factor(down_test$Loan_Status))
+
+```
+Again, accuracy is 100% with different values of ntress.
+
+# STEP 7: GRADIENT BOOSTING
+
+```{r message=FALSE, warning=FALSE}
+
+set.seed(9650)
+# Divide data into train and test sets
+indexTrain <- createDataPartition(y=bankloan$Loan_Status, p=0.75, list=FALSE) 
+training <- bankloan[indexTrain, ]
+testing <- bankloan[-indexTrain, ]
+
+# Cross Validation for parameter tuning
+control <- trainControl(method='repeatedcv', number=10, repeats=1, search = 'random')
+# C5.0
+fit.c50 <- train(Loan_Status~., data=down_train, method='C5.0', trControl=control, preProcess=c("center", "scale", "BoxCox"))
+# Gradient Boosting Method
+set.seed(9650)
+fit.gbm <- train(Loan_Status~., data=down_train, method='gbm', trControl=control, preProcess=c("center", "scale", "BoxCox"), verbose=FALSE)
+# summarize results
+boosting_results <- resamples(list(c5.0=fit.c50, gbm=fit.gbm))
+summary(boosting_results)
+dotplot(boosting_results)
+# prediction for C5.0
+predictions <- predict(fit.c50, down_test)
+confusionMatrix(predictions, down_test$Loan_Status)
+# prediction for gbm
+predictions <- predict(fit.gbm, down_test)
+confusionMatrix(predictions, down_test$Loan_Status)
+```
+Both versions of Gradient Boosting (the original model of caret--C5.0 and gbm) give also 100% accuracy.
+
+# STEP 8: ENSEMBLE IMPLEMENTATION OF MULTIPLE ALGORITHMS
+
+For the following algorithm, I'll use 2000 samples instead of the entire 26000 because large data slows down run time.
+
+## a) caretList
+caretList is a flexible function for fitting many different caret models, with the same resampling parameters, to the same dataset.
+
+```{r warning=FALSE, message=FALSE}
+library(caret)    
+library(glmnet)     
+library(xgboost)    
+library(randomForest)     
+
+# Fitting a Single Model through Caret
+
+library(ISLR)
+library(caret)
+library(readxl)
+library(pROC)
+library(lattice)
+library(ggplot2)
+library(dplyr)
+library(e1071) 
+library(corrplot)
+#library(kknn)
+library(ggplot2)
+library(multiROC)
+library(MLeval)
+library(AppliedPredictiveModeling)
+library(corrplot)
+library(Hmisc)
+library(dplyr)
+library(quantmod) 
+
+library(nnet)
+library(caret)
+library(NeuralNetTools)
+
+library(mlbench)
+library(caretEnsemble)
+library(ranger)
+library(mboost)
+library(kernlab)
+
+set.seed(9650)
+
+# Data is very large 26,400 reports. So take out a subset to save time on running
+sub_bankloan <- bankloan[1:2000, ]
+
+# Need to convert to levels
+levels(sub_bankloan$Loan_Status) <- c('first_class', 'second_class')
+#bankloan$Loan_Status <- as.factor(bankloan$Loan_Status)
+
+# Divide data into train and test sets
+indexTrain <- createDataPartition(y=sub_bankloan$Loan_Status, p=0.75, list=FALSE) 
+training <- sub_bankloan[indexTrain, ]
+testing <- sub_bankloan[-indexTrain, ]
+
+# Downsampling to balance data
+down_train <- downSample(x=training[, -ncol(training)], y=training$Loan_Status)
+down_test <- downSample(x=testing[, -ncol(testing)], y=testing$Loan_Status)
+typeof(down_train$Loan_Status)
+
+# set parameter tunning
+control <- trainControl(method='repeatedcv', number=10, repeats=1, search='grid', savePredictions = 'final', index=createResample(down_train$Loan_Status, 10), summaryFunction = twoClassSummary, classProbs = TRUE, verboseIter = FALSE)
+ 
+# List of algorithms to use in ensemble
+# glm (Generalized Linear Model), gbm, glmboost are Gradient Boosting methods, nnet is Neural Network. treebag is Bagged CART
+# glmbost cause program stopping
+alg_list <- c('rf', 'glm', 'gbm', 'nnet', 'treebag', 'svmLinear')  
+
+# caretList is a flexible function for fitting many different caret models, with the same resampling parameters, to the same dataset. 
+multi_mod <- caretList(Loan_Status~., data=down_train, trControl=control, methodList=alg_list, metric='ROC')
+
+results <- resamples(multi_mod)
+summary(results)
+```
+All the tree base algorithms (rf, glm, gbm, treebag) give 100% ROC, 100% sensitivity and 100% specificity. Neural Network and SVM give less great performance. For some reason, glmboost cause my program to stop, so it's not included in the execution.
+
+## b) caretStack
+Combine several predictive models via stacking. Find a good linear combination of several classification or regreesion models, using either linear regression, elastic net regression, or greedy optimization.
+
+```{r message=FALSE, warning=FALSE}
+
+set.seed(9650)
+
+# Data is very large 26,400 reports. So take out a subset to save time on running
+sub_bankloan <- bankloan[1:1000, ]
+
+# Need to convert to levels
+levels(sub_bankloan$Loan_Status) <- c('first_class', 'second_class')
+
+# Divide data into train and test sets
+indexTrain <- createDataPartition(y=sub_bankloan$Loan_Status, p=0.75, list=FALSE) 
+training <- sub_bankloan[indexTrain, ]
+testing <- sub_bankloan[-indexTrain, ]
+
+# Downsampling to balance data
+down_train <- downSample(x=training[, -ncol(training)], y=training$Loan_Status)
+down_test <- downSample(x=testing[, -ncol(testing)], y=testing$Loan_Status)
+
+# set parameter tunning
+control <- trainControl(method='repeatedcv', number=10, repeats=1, search='grid', savePredictions = 'final', index=createResample(down_train$Loan_Status, 10), summaryFunction = twoClassSummary, classProbs = TRUE, verboseIter = FALSE)
+ 
+# List of algorithms to use in ensemble
+# svmLinear cause resampling error, so eliminate it 
+alg_list <- c('rf', 'glm', 'gbm', 'nnet', 'treebag')  
+
+multi_mod <- caretList(Loan_Status~., data=down_train, trControl=control, methodList=alg_list, metric='ROC')
+
+results <- resamples(multi_mod)
+summary(results)
+
+# Stacking
+stackControl <- trainControl(method = "repeatedcv", number = 10, repeats = 3, savePredictions = TRUE, classProbs = TRUE, verboseIter = TRUE)
+
+stack <- caretStack(multi_mod, method = "rf", metric = "Accuracy", trControl = stackControl)
+
+print(stack)
+
+# Prediction
+predictions <- predict(stack, down_test)
+confusionMatrix(predictions, down_test$Loan_Status)
+
+```
+Stacking combines the ensemble of models. The result is 100% in accuracy, specificity and sensitivity. 
+
+# CONCLUSION AND DISCUSSION
+My data are imbalanced, 82% is "Fully Paid". This is the reason all "Charge Off" class is wrongly predicted as "Fully Paid". Sensitivity was 0 before data balancing. This is very bad. After resampling technique by downsampling, Random Forest and all other tree base ensemble algorithms ('rf', 'glm', 'gbm', 'treebag') give 100% in accuracy, 100% specificity, 100% sensitivity, and 100% Kappa. This is surprising remarkable. Removing outliers and balancing data are so helpful! Also thanks to the supreme performance of ensemble tree algorithms and the Caret package!
+
+Ensemble implementation with multiple algorithms (using caretList and caretStack), shows Neural Network and SVM methods has very poor performance, which is surprising to me. However, their combined effect, Stacking, which is a heterogeneous ensemble technique still gives 100% accuracy, sensitivity and specificity. This is because even though Neural Network and SVM are weak learners, their combination complements each other and thus is a strong learner.
+
+The short coming of the data is that they are imbalance, but this is not a problem with resampling techniques. 
+
+In the future, I would like to improve performance of Neural Network and SVM algorithms. I also want to run regression predictions for other features like credit score and annual income. 

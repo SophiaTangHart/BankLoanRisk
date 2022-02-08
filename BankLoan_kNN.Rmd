@@ -1,0 +1,482 @@
+---
+title: "<center>K Nearest Neighbors</center>"
+subtitle: "<center>Bank Loan Status dataset</center>"
+date: "<center>`r format(Sys.time(), '%B %Y')`</center>"
+author: "<center>Sophia Tang Hart</center>"
+output: #html_notebook
+  html_document:
+      theme: journal
+      toc: yes
+      toc_depth: 4
+      #toc_float: true
+  word_document:
+      toc: yes
+      toc_depth: 4
+      #toc_float: true
+  pdf_document:
+      toc: yes
+      theme: journal
+      toc_depth: 4
+      #toc_float: true
+---
+
+
+# Objective and Data Description
+**Background: ** 
+
+Banks loan out money to customers to finance a car, a house, pay for education, consolidate loans, etc. Borrowers agree to pay back the money with an interest on a monthly basis. Sometimes, due to unexpected circumstances, some borrowers are not able to pay back the money. 
+
+
+**Research Objectives: **
+
+For the banks, it would be helpful to see what is the pattern in the customers to predict if a customer can pay back the loan, so the back knows who to lend out the money. I want to predict if any customer goes to a bank, should the bank loan out the money to the customer base on model learned from this dataset. 
+
+
+**Research Questions: ** 
+
+1. What factors contribute/correlated most to bank loan status?
+
+2. Can we predict if a borrower will be able to pay the debt in full?
+
+3. What Machine Learning algorithms perform best in the prediction? (First Guess)
+
+4. Optimize all (or the best) algorithms. With the fine tuned hyperparameters, what is the best prediction performance? Which algorithm?
+
+
+**Dataset**
+
+The dataset is taken from Kaggle (https://www.kaggle.com/zaurbegiev/my-dataset). There are over 100,000 rows and 19 columns (features) in this dataset. The predicted feature variable is Loan_Status, which is a categorical variable with value either "Fully Paid" or "Charged off". Fully Paid means the borrower can pay back the debt, while charged off means the borrower is unlikely pay the bank after a substantial delinquent for a period of time. The remainder of the debt is sometimes collected by a third-party agency.
+ 
+
+LoanID,
+
+CustomerID,
+
+Loan_Status,
+
+Current_Loan_Amount,
+
+Term,
+
+Credit_Score,
+
+Annual_Income,
+
+Years_in_current_job,
+
+Home_Ownership,
+
+Purpose,
+
+Monthly_Debt,
+
+Years_of_Credit_History,
+
+Months_since_last_delinquent,
+
+Number_of_Open_Accounts,
+
+Number_of_Credit_Problems,
+
+Current_Credit_Balance,
+
+Maximum_Open_Credit,
+
+Bankruptcies,
+
+Tax_Liens
+
+
+# STEP 1: LOAD LIBRARIES AND DATA
+```{r message=FALSE, warning=FALSE}
+library(caret)
+library(dplyr)
+library(tidyverse)
+library(mlbench)
+library(gmodels)
+# for multiple plots in one figure (ggarrange)
+library(ggpubr)
+library(ROSE)
+
+```
+
+### Examing data
+```{r}
+
+# Clear memory
+rm(list=ls())
+
+# read in data
+BankLoan_dataset <- read.csv("LoanStatus.csv")
+
+# remove unrelevant fields
+BankLoan_dataset <- subset(BankLoan_dataset, select=-c(LoanID, CustomerID))
+
+# data structure
+str(BankLoan_dataset)
+
+# data summary
+summary(BankLoan_dataset)
+```
+
+# STEP 2: DATA PREPROCESSING
+```{r}
+# extract only the numbers (e.g. <1 year), It caps at 10 for 10+ years
+BankLoan_dataset$Years_in_current_job = extract_numeric(BankLoan_dataset$Years_in_current_job)
+BankLoan_dataset$Years_in_current_job <- as.numeric(BankLoan_dataset$Years_in_current_job)
+
+```
+### Defining Functions
+```{r}
+
+# Function to remove outliers
+# remove_outliers <- function(v) {
+#  filter(between(v, 
+#                  quantile(v, 0.25) - 1.5* IQR(v),
+#                  quantile(v, 0.75) + 1.5* IQR(v))) 
+# }
+
+# remove_outliers <- function(x, na.rm = TRUE) {
+#   qnt <- quantile(x, probs=c(.25, .75), na.rm = na.rm)
+#   H <- 1.5 * IQR(x, na.rm = na.rm)
+#   y <- x
+#   y[x < (qnt[1] - H)] <- NA
+#   y
+# }
+
+plot_hist <- function(data, v) {
+  ggplot(data, aes(x=v)) +
+  geom_histogram(bins=50)
+}
+
+plot_box <- function(data, v) {
+  ggplot(data, aes(x=v)) +
+    geom_boxplot()
+}
+
+```
+### Convert Categorical Variables
+### Remove Outliers and Null
+
+
+```{r}
+# show outliers before removing them
+histogram(BankLoan_dataset$Annual_Income)
+
+bankloan <- BankLoan_dataset %>%
+  # convert string feature into categorical factors
+  mutate_if(is.character, as.factor) %>% 
+  
+  # remove the nulls
+  drop_na() %>%
+
+  ### Remove outliers
+  # Annual_Income
+  filter(between(Annual_Income, 
+                 quantile(Annual_Income, 0.25) - 1.5* IQR(Annual_Income),
+                 quantile(Annual_Income, 0.75) + 1.5* IQR(Annual_Income))) %>%
+  # Current_Loan_Amount
+  filter(between(Current_Loan_Amount, 
+                 quantile(Current_Loan_Amount, 0.25) - 1.5* IQR(Current_Loan_Amount),
+                 quantile(Current_Loan_Amount, 0.75) + 1.5* IQR(Current_Loan_Amount))) %>%
+  # Credit_Score
+  filter(between(Credit_Score, 
+                 quantile(Credit_Score, 0.25) - 1.5* IQR(Credit_Score),
+                 quantile(Credit_Score, 0.75) + 1.5* IQR(Credit_Score))) %>%
+  #Number_of_Credit_Problems (there is an outlier of 15)
+  filter(between(Number_of_Credit_Problems, 
+                 quantile(Number_of_Credit_Problems, 0.25) - 1.5* IQR(Number_of_Credit_Problems),
+                 4)) %>%
+  # Monthly_Debt
+  filter(between(Monthly_Debt, 
+               quantile(Monthly_Debt, 0.25) - 1.5* IQR(Monthly_Debt),
+               quantile(Monthly_Debt, 0.75) + 1.5* IQR(Monthly_Debt))) %>%
+  
+  #remove null after filling outliers with NA
+  drop_na()
+
+str(bankloan)
+summary(bankloan)
+
+#check if there is null
+is.null(bankloan)
+
+# showing no outliers
+histogram(bankloan$Annual_Income)
+
+```
+
+Histogram shows outliers are removed. Annual income is skewed right. After removing outliers and Null values, there are still 26,500 data left to work with.
+
+
+# STEP 3: STATISTICAL SUMMARY
+
+## a) Graphical Summary
+```{r}
+# BAR graph for categorical variables
+
+ggplot(bankloan, aes(x=Purpose)) +
+  geom_bar() +
+  coord_flip()
+
+gg_status <- ggplot(bankloan, aes(x=Loan_Status)) +
+  geom_bar()
+
+gg_home <- ggplot(bankloan, aes(x=Home_Ownership)) +
+  geom_bar() +
+  coord_flip()
+
+gg_problem <- ggplot(bankloan, aes(x=Number_of_Credit_Problems)) +
+  geom_bar() 
+
+gg_job <- ggplot(bankloan, aes(x=Years_in_current_job)) +
+  geom_bar() 
+
+# arrange multiple plots in one figure  
+figure <- ggarrange(gg_status, gg_home, gg_problem, gg_job,
+                    ncol = 2, nrow = 2,
+                    legend="none")
+figure
+
+
+# Boxplot for quantitative variables
+ggplot(bankloan, aes(x=Loan_Status, y=Annual_Income)) +
+  geom_boxplot()
+
+ggplot(bankloan, aes(x=Loan_Status, y=Current_Loan_Amount)) +
+  geom_boxplot()
+
+ggplot(bankloan, aes(x=Loan_Status, y=Credit_Score)) +
+  geom_boxplot()
+
+ggplot(bankloan, aes(x=Loan_Status, y=Monthly_Debt)) +
+  geom_boxplot()
+
+
+```
+
+From the bar graphs, we can see that the data is imbalanced, Paid Fully is much more than Charge Off. The home_ownership is have_mortgage most and rent is secondly. Most people have zero number of credit problems. Most people work 10+ years in current job. The most purpose of loans is Debt Consolidation.
+
+From the Boxplots, comparing annual income, current loan amount, monthly debt and credit score, annual income seems to be the biggest difference between Fully Paid and Charged Off customers.
+
+
+## b) Numerical Summary
+```{r}
+# proportion of Paid-fully and Charged-off
+table(bankloan$Loan_Status)
+round(prop.table(table(bankloan$Loan_Status)) * 100, 1)
+
+# Average group by loan status
+# Annual_Income is column5, credit score is column4
+aggregate(bankloan[, 4:5], list(bankloan$Loan_Status), mean)
+
+```
+
+Numerical statistics shows Fully Paid is 81.8% of the total data. The average annual income for fully paid customers is 1.31M and 1.2M for charged off customers.
+
+# STEP 4: FEATURE SELECTION
+
+## a) Variable Importance
+```{r}
+set.seed(9650)
+# Divide data into train and test sets
+indexTrain <- createDataPartition(y=bankloan$Loan_Status, p=0.75, list=FALSE) 
+training <- bankloan[indexTrain, ]
+testing <- bankloan[-indexTrain, ]
+
+# print ratio of Loan status in test set and train set
+round(prop.table(table(training$Loan_Status)) * 100, 1)
+round(prop.table(table(testing$Loan_Status)) * 100, 1)
+
+# Cross Validation for parameter tuning
+fitControl <- trainControl(method="repeatedcv", number=10)
+# Train the model
+# The first arguement is what to predict, ~. means use all variables
+model <- train(Loan_Status~., data=training, method='knn', preProcess=c("center", "scale", "BoxCox"), trControl=fitControl)
+
+# Estimate varible importance
+importance <- varImp(model, scale=FALSE)
+# Summarize and plot the importance
+print(importance)
+plot(importance)
+
+```
+
+## b) Recursive Feature Elimination 
+
+This can take a long time to run. I have about ~26,000 data, so it take a long time to run Recursive feature elimination. Reduce data to a smaller subset
+```{r}
+set.seed(9650)
+sub_bankloan <- bankloan[1:2000, ]
+
+# Divide data into train and test sets
+indexTrain <- createDataPartition(y=sub_bankloan$Loan_Status, p=0.75, list=FALSE) 
+sub_training <- sub_bankloan[indexTrain, ]
+sub_testing <- sub_bankloan[-indexTrain, ]
+
+# take all features except Loan_staus. names(training) gives labels
+sub_trainX <- sub_training[, names(training) != "Loan_Status"]
+
+# define control using random forest selection function
+control <- rfeControl(functions=rfFuncs, method='cv', number=10)
+# Run the RFE algorithm
+results <- rfe(sub_trainX, sub_training$Loan_Status, size=c(1:8), rfeControl=control)
+# Print and plot results
+print(results, top=6)
+plot(results, type=c('g', 'o'))
+
+```
+
+5 Variables seems to be a good number. Annual income is the #1 most important variable in predicting loan status. Followed by Credit_Score, Maximum_Open_Credit, Number_of_Credit_Problems, Current_Loan_Amount.
+
+
+# STEP 5: IMPLEMENTING k-NN ALGORITHM 
+
+## a) Using All Numeric Feature Variables
+                        
+```{r}
+set.seed(9650)
+
+# Cross Validation for parameter tuning
+fitControl <- trainControl(method='repeatedcv', number=10, repeats=3)
+
+# train the model
+kNNfit <- train(Loan_Status~., data=training, method='knn', trControl=fitControl, preProcess=c("center", "scale", "BoxCox"), tuneLength=20)
+
+#print output
+kNNfit
+plot(kNNfit)
+
+# Prediction
+kNNpredict <- predict(kNNfit, newdata=testing)
+
+# confusion matrix to see accuracy and other parameter values
+confusionMatrix(kNNpredict, testing$Loan_Status)
+
+# compute accuracy by comparing prediction with actual classification
+mean(kNNpredict == testing$Loan_Status)
+```
+
+Accuracy is 81.7% with all predictor features. Hyperparameters, such as k nearest neighbors and how the distance is calculated, are fine tune using cross-validation. "BoxCox" method is applied to transform data into normal distribution, since by default z-score standardization works for normal distributed data. Optimal k is about 27.
+
+
+## b) Implementing Algorithm Using 5 Most Important Variables
+The top 5 variables (out of 16):
+Annual_Income, Credit_Score, Maximum_Open_Credit, Number_of_Credit_Problems, Current_Loan_Amount
+
+```{r}
+set.seed(9650)
+# bankloan already remove NULL and outliers, and convert to factors
+bankloan5 <- subset(bankloan, select=c(Annual_Income, Credit_Score, Maximum_Open_Credit, Number_of_Credit_Problems, Current_Loan_Amount, Loan_Status))
+
+#bankloan5$Loan_Status <- as.factor(bankloan5$Loan_Status)
+  
+indexTrain <- createDataPartition(y=bankloan5$Loan_Status, p=0.75, list=FALSE)
+training5 <- bankloan5[indexTrain, ]
+testing5 <- bankloan5[-indexTrain, ]
+
+# Cross Validation for parameter tuning
+fitControl <- trainControl(method='repeatedcv', number=10, repeats=3)
+
+# train the model
+kNNfit5 <- train(Loan_Status~., data=training5, method='knn', trControl=fitControl, preProcess=c("center", "scale", "BoxCox"), tuneLength=20)
+
+#print output
+kNNfit5
+plot(kNNfit5)
+
+# Prediction
+kNNpredict5 <- predict(kNNfit5, newdata=testing5)
+
+# confusion matrix to see accuracy and other parameter values
+confusionMatrix(kNNpredict5, testing5$Loan_Status)
+
+mean(kNNpredict5 == testing5$Loan_Status)
+```
+
+Accuracy is also 81.7% with 5 most important variables. The same as with all variables.
+
+
+# STEP 6: PERFORMANCE IMPROVEMENT 
+My data are imbalanced, 81% is "fully Paid". This is the reason most "Charge Off" class is wrongly predicted as "Fully Paid". Sensitivity = 0.0066 from previous two models. This is very poor.
+
+## a) Balancing Data with ROSE Package
+
+```{r}
+set.seed(9650)
+table(training$Loan_Status)
+
+# ROSE resampling to balance data
+rose_train <- ROSE(Loan_Status ~ ., data=training, seed=123)$data
+rose_test <- ROSE(Loan_Status ~ ., data=testing, seed=123)$data
+
+table(rose_train$Loan_Status)
+table(rose_test$Loan_Status)
+
+# cross validation and fitting model
+fitControl <- trainControl(method='repeatedcv', number=10)
+rose_kNNfit <- train(Loan_Status~., data=rose_train, method='knn', trControl=fitControl, preProcess=c("center", "scale", "BoxCox"), tuneLength=12)
+
+#print output
+rose_kNNfit
+plot(rose_kNNfit)
+
+# Prediction
+rose_kNNpredict <- predict(rose_kNNfit, newdata=rose_test)
+
+# confusion matrix to see accuracy and other parameter values
+confusionMatrix(rose_kNNpredict, rose_test$Loan_Status)
+
+mean(rose_kNNpredict == rose_test$Loan_Status)
+```
+
+Balancing data with the ROSE package seems to degrade the performance to 56% accuracy. This is probably because my data is kind of big, 26,000 after removing all null and outliers. ROSE package synthesis additional data. This can overfit the model and increase the noise further. Since my data is large, I can downsampling data without loosing information. 
+
+## b) Balancing Data by Downsampling
+
+```{r}
+set.seed(9650)
+table(training$Loan_Status)
+
+# ROSE resampling to balance data
+down_train <- downSample(x=training[, -ncol(training)],
+                         y=training$Loan_Status)
+down_test <- downSample(x=testing[, -ncol(testing)],
+                         y=testing$Loan_Status)
+
+table(down_train$Loan_Status)
+table(down_test$Loan_Status)
+
+
+# cross validation and fitting model
+fitControl <- trainControl(method='repeatedcv', number=10)
+down_kNNfit <- train(Loan_Status~., data=down_train, method='knn', trControl=fitControl, preProcess=c("center", "scale", "BoxCox"), tuneLength=12)
+
+#print output
+down_kNNfit
+plot(down_kNNfit)
+
+# Prediction
+down_kNNpredict <- predict(down_kNNfit, newdata=down_test)
+
+# confusion matrix to see accuracy and other parameter values
+confusionMatrix(down_kNNpredict, down_test$Loan_Status)
+
+# calculate accuracy
+mean(down_kNNpredict == down_test$Loan_Status)
+
+```
+
+Balancing data by downsampling improves performance to 98.6%. Best k value is 13.
+
+
+# CONCLUSION AND DISCUSSION
+Results from algorithm with all variables is the same as with 5 most important variable. The classification accuracy is 81.7%, with a 95% confidence interval of (80.8%, 82.7%). 
+
+My data are imbalanced, 82% is "fully Paid". This is the reason most "Charge Off" class is wrongly predicted as "Fully Paid", and sensitivity is only 0.0066. Resampling using ROSE package improves sensitivity (from 0.0066 to 0.56). However, accuracy goes down to 55%. This is because ROSE increase data size and increase noise further.
+
+Since my data is medium size, I can downsize the majority class. I was happy to see that the accuracy is improved drastically to **98.6% using downsampling to balance the data.** p-value~0, meaning this accuracy is statistically significant. Sensitivity and specificity are 98.2% and 98.6%, respectively. Kappa=0.97.
+
+The short coming of the data is that they are imbalance, but this is not a problem with resampling techniques. About half of the variables are categorical. Categorical variables are not good predictors for k-NN algorithm since distance among different groups does not have real meaning.
+
+In the future, I would like to compare k-NN with other algorithms like Random Forest and Neural Network. I also want to run regression predictions for other features like credit score and annual income. 
